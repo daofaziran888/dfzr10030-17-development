@@ -20,7 +20,9 @@ export default defineConfig({
     open: false,
     strictPort: false,
     proxy: {
-      '/api': {
+      // 只代理 /api/ 前缀：'/apiclient' 这类页面路由同样以 /api 开头，
+      // 用 '/api' 做前缀会把 API接入管理 页面也转发到后端。
+      '/api/': {
         target: proxyTarget,
         changeOrigin: true,
       },

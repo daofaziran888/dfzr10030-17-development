@@ -25,7 +25,7 @@ class LineageService:
         nodes: list[dict] = []
         edges: list[dict] = []
         for i, row in enumerate(rows):
-            nodes.append({"id": int(row.get("id", i+1)), "name": str(row.get(list(row.keys())[1] if len(row)>1 else "name", "")), "status": str(row.get("status", STATUS_ORDER[0])),
+            nodes.append({"id": int(row.get("id", i+1)), "name": str(row.get("关系编号") or f"LINE-{i+1:04d}"), "status": str(row.get("status", STATUS_ORDER[0])),
                           **{k: row[k] for k in row if k not in ("id","status","pending","abnormal")}})
         for i in range(len(nodes)-1):
             edges.append({"from": nodes[i]["id"], "to": nodes[i+1]["id"], "label": "依赖"})
@@ -41,6 +41,11 @@ class LineageService:
         rows = store.rows(MODULE)
         entry = {"id": max((int(r.get("id",0)) for r in rows), default=0) + 1}
         entry.update({f: values.get(f) for f in REQUIRED_FIELDS})
+        # 字段级血缘视图需要来源字段、目标字段、采集批次和关系版本；
+        # 登记时带上这些字段，新关系才会进入字段路径解析。
+        for field in ("来源字段", "目标字段", "转换说明", "采集批次", "关系版本"):
+            if values.get(field) not in (None, ""):
+                entry[field] = values.get(field)
         entry["status"] = STATUS_ORDER[0]
         entry["pending"] = True
         entry["abnormal"] = False

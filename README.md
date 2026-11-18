@@ -65,7 +65,42 @@ npm run dev
 | 采集转换管道 | `transform` | 转换节点 | 节点编号、输入来源、输出目标 |
 | 数据流转编排 | `flow` | 流转管道 | 管道编号、管道名称、起始节点 |
 | 数据血缘追踪 | `lineage` | 血缘关系 | 关系编号、上游节点、下游节点 |
+| 字段级血缘视图 | `lineage/field-view` | 字段路径 | 来源字段、目标字段、采集批次、关系版本 |
 | 采集报告 | `report` | 采集报告 | 报告编号、采集源、统计周期 |
+
+## 字段级血缘视图
+
+同一份字段级血缘视图由血缘服务和流转编排服务共同读取，两端看到的快照一致。
+
+- **解析**：按 `上游节点 + 来源字段` 归组血缘关系记录，沿 `目标字段` 串成字段路径；
+  每条路径绑定 `关系版本` 与 `采集批次`，采集批次版本来自 `backend/app/services/field_lineage.py`
+  的 `BATCH_VERSIONS`。
+- **唯一目标**：同一「下游节点 + 目标字段」在当前视图中只保留一个可执行关系，
+  其余作为历史差异保留，避免回查把两个转换结果混在一起。
+- **业务边界**：`precedence=verified`（验证优先）让已验证关系决定当前路径，
+  `precedence=latest`（最新优先）让最新记录决定当前路径；两种边界都不放宽唯一目标约束。
+- **页面**：运营概览只列汇总，血缘页 `数据血缘追踪` 概览列出汇总并提供明细入口，
+  独立视图 `/lineage/field-view` 展开字段路径、切换关系版本并查看差异。
+- **流转编排**：`/flow` 读取同一接口的同一快照生成节点顺序，并可通过
+  「落到待复核台账」把视图写入待复核台账；核对结果写回字段级血缘视图。
+- **并发写**：同快照的台账同步与同台账项的复核写入都只允许一次成功，
+  后续请求返回 `409 snapshot_conflict`；旧结果保留在台账历史中。
+
+接口：
+
+```text
+GET  /api/lineage/field-view?precedence=verified|latest&batch=&version=
+GET  /api/lineage/field-view/summary
+GET  /api/lineage/field-view/paths/{path_id}/versions
+GET  /api/lineage/field-view/paths/{path_id}/diff?left=v1&right=v2
+GET  /api/flow/field-view
+GET  /api/flow/field-view/order
+POST /api/flow/field-view/ledger/sync
+POST /api/flow/field-view/ledger/{id}/review
+```
+
+测试：后端 `cd backend && .venv/bin/python -m unittest tests.test_field_lineage -v`，
+前端 `cd frontend && npx playwright test tests/field_lineage.spec.ts`。
 
 ## 约定
 

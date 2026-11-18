@@ -20,6 +20,57 @@
         </g>
       </svg>
     </div>
+    <section class="field-preview" data-testid="flow-field-view">
+      <header class="field-preview-head">
+        <div>
+          <h3>字段级血缘视图（同一快照）</h3>
+          <p class="page-desc">编排服务读取与血缘页相同的字段路径快照，按上下游关系给出下一节点顺序。</p>
+        </div>
+        <div class="page-actions">
+          <RouterLink class="btn" to="/lineage/field-view" data-testid="open-field-view">查看字段路径明细</RouterLink>
+          <button class="btn" type="button" data-testid="sync-ledger" :disabled="syncing" @click="syncLedger">
+            {{ syncing ? '同步中…' : '落到待复核台账' }}
+          </button>
+          <button class="btn" type="button" data-testid="refresh-flow-view" @click="reloadFieldView">刷新</button>
+        </div>
+      </header>
+      <div class="stat-row" style="margin-bottom:0">
+        <article v-for="item in orderSummary" :key="item.label" class="stat-card">
+          <span class="stat-label">{{ item.label }}</span>
+          <strong class="stat-value">{{ item.value }}</strong>
+        </article>
+      </div>
+      <p class="page-desc" data-testid="flow-snapshot">
+        快照 {{ flowSnapshot || '—' }} · {{ precedenceLabel }} · 来源 {{ fieldOrder.generated_from || '字段级血缘视图' }}
+      </p>
+      <ol class="node-order" data-testid="node-order">
+        <li v-for="item in fieldOrder.order || []" :key="item.node">
+          <strong>{{ item.position }}. {{ item.node }}</strong>
+          <span v-if="item['下一节点'] && item['下一节点'].length"> → {{ item['下一节点'].join('、') }}</span>
+        </li>
+      </ol>
+      <p v-if="flowMessage" class="page-desc" data-testid="flow-message">{{ flowMessage }}</p>
+
+      <h4 style="margin:12px 0 6px">待复核台账</h4>
+      <table class="data-table" v-if="ledgerItems.length">
+        <thead><tr><th>台账</th><th>字段路径</th><th>关系版本</th><th>差异摘要</th><th>复核状态</th><th>核对结果</th><th>操作</th></tr></thead>
+        <tbody>
+          <tr v-for="entry in ledgerItems" :key="entry.id" :data-testid="`ledger-${entry.id}`" :data-review-status="entry['复核状态']">
+            <td>{{ entry.id }}</td>
+            <td>{{ entry['字段路径'] }}</td>
+            <td>{{ entry['关系版本'] }}</td>
+            <td>{{ entry['差异摘要'] }}</td>
+            <td>{{ entry['复核状态'] }}</td>
+            <td>{{ entry['核对结果'] || '—' }}</td>
+            <td class="row-actions">
+              <button class="link" type="button" data-testid="review-agree" :disabled="entry['复核状态'] !== '待复核'" @click="review(entry, '一致')">核对一致</button>
+              <button class="link" type="button" data-testid="review-diff" :disabled="entry['复核状态'] !== '待复核'" @click="review(entry, '存在差异')">标记差异</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="empty-state">尚未同步：点击「落到待复核台账」读取当前快照。</p>
+    </section>
     <div v-if="selectedNode" class="dag-detail" data-testid="dag-detail">
       <dl><dt>编号</dt><dd>{{ selectedNode.id }}</dd></dl>
       <dl><dt>名称</dt><dd>{{ selectedNode.name || selectedNode.label }}</dd></dl>
@@ -42,8 +93,10 @@
 </template>
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { request } from '@/api/client'
+import { RouterLink } from 'vue-router'
+import { fetchJson, request } from '@/api/client'
 const ENDPOINT = '/api/flow'
+const FIELD_ENDPOINT = '/api/flow/field-view'
 const columns = ["管道编号", "管道名称", "起始节点", "终止节点", "中间节点", "流转条件", "并行数量", "管道状态"]
 const actions = ["提交校验", "启用管道", "停用管道"]
 const statuses = ["草稿", "待校验", "已启用", "已停用"]
@@ -78,5 +131,72 @@ async function submitCreate() {
   try { const res = await request(ENDPOINT, { method: 'POST', body: JSON.stringify({ values: createValues.value }) }); if(!res.ok) throw new Error('创建失败'); showCreate.value = false; await reload() } catch(e: any) { errorMessage.value = e.message }
 }
 function exportRows() { window.open(`${ENDPOINT}/export`, '_blank') }
-onMounted(reload)
+
+const fieldOrder = ref<any>({ order: [], edges: [] })
+const flowSnapshot = ref('')
+const precedence = ref('verified')
+const precedenceLabel = ref('验证优先')
+const syncAttempted = ref(false)
+const ledgerItems = ref<any[]>([])
+const flowMessage = ref('')
+const syncing = ref(false)
+const orderSummary = computed(() => [
+  { label: '节点顺序数', value: (fieldOrder.value.order || []).length },
+  { label: '字段路径数', value: (fieldOrder.value.paths || []).length },
+  { label: '冲突字段数', value: fieldOrder.value.conflict_count ?? 0 },
+  { label: '待复核台账', value: ledgerItems.value.filter((e: any) => e['复核状态'] === '待复核').length },
+])
+async function loadLedger() {
+  try {
+    const data = await fetchJson<any>(`${FIELD_ENDPOINT}/ledger`)
+    ledgerItems.value = data.items || []
+  } catch (e) { ledgerItems.value = [] }
+}
+async function reloadFieldView() {
+  try {
+    const data = await fetchJson<any>(`${FIELD_ENDPOINT}/order?precedence=${precedence.value}`)
+    fieldOrder.value = data
+    flowSnapshot.value = data.snapshot || ''
+    precedenceLabel.value = data.precedence_label || ''
+  } catch (e) { flowMessage.value = '字段级血缘视图读取失败' }
+  await loadLedger()
+}
+async function syncLedger() {
+  syncing.value = true
+  try {
+    const res = await request(`${FIELD_ENDPOINT}/ledger/sync`, {
+      method: 'POST',
+      body: JSON.stringify({ values: { precedence: precedence.value, snapshot: flowSnapshot.value } }),
+    })
+    const data = await res.json()
+    if (res.status === 409) {
+      flowMessage.value = data.message || '同快照并发写仅一次成功：本次写入已拒绝，已有台账保留'
+    } else {
+      flowMessage.value = data.message || '已同步到待复核台账'
+    }
+    await loadLedger()
+  } catch (e) { flowMessage.value = '同步待复核台账失败' }
+  syncing.value = false
+}
+async function review(entry: any, result: string) {
+  try {
+    const res = await request(`${FIELD_ENDPOINT}/ledger/${entry.id}/review`, {
+      method: 'POST',
+      body: JSON.stringify({ values: { result, snapshot: entry['快照'] } }),
+    })
+    const data = await res.json()
+    if (res.status === 409) {
+      flowMessage.value = data.message || '同快照并发写仅一次成功：本次核对未写入，旧结果保留'
+    } else {
+      flowMessage.value = data.message || '核对结果已写入字段级血缘视图'
+    }
+    await loadLedger()
+  } catch (e) { flowMessage.value = '复核写回失败' }
+}
+onMounted(() => { reload(); reloadFieldView() })
 </script>
+<style scoped>
+.field-preview { margin-top: 12px; padding: 12px; background: #fff; border: 1px solid var(--border); border-radius: 8px; }
+.field-preview-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+.field-preview-head h3 { margin: 0; font-size: 15px; }
+</style>

@@ -1,8 +1,14 @@
-"""数据流转编排 DAG 图服务：生成节点、边示例结构与流转规则。"""
+"""数据流转编排 DAG 图服务：生成节点、边示例结构与流转规则。
+
+编排服务不重复实现字段路径解析：它通过 ``FieldLineageService`` 这个链路读取
+与血缘页相同的字段级血缘视图快照，据此给出节点顺序，并把视图落到待复核台账；
+复核结果再写回字段级血缘视图。
+"""
 from __future__ import annotations
 
 from typing import Any
 
+from app.services.field_lineage import PRECEDENCE_LATEST, PRECEDENCE_VERIFIED, field_lineage_service
 from app.store import store
 
 MODULE = "flow"
@@ -62,3 +68,48 @@ class FlowService:
     def raw_data(self) -> tuple[list[dict], list[dict]]:
         g = self.get_graph()
         return g["nodes"], g["edges"]
+
+    # ------------------------------------------------------------------
+    # 字段级血缘视图的第二个消费方：编排顺序 + 待复核台账 + 核对结果写回
+    # ------------------------------------------------------------------
+    def field_view(self, precedence: str | None = None) -> dict[str, Any]:
+        """和血缘页读取同一份字段级视图，保证两个页面看到同一快照。"""
+        return field_lineage_service.view(precedence=precedence or PRECEDENCE_VERIFIED)
+
+    def node_order(
+        self,
+        precedence: str | None = None,
+        snapshot: str | None = None,
+    ) -> dict[str, Any]:
+        order = field_lineage_service.node_order(
+            precedence=precedence or PRECEDENCE_VERIFIED
+        )
+        order["source"] = "flow"
+        if snapshot and snapshot != order["snapshot"]:
+            order["stale_snapshot"] = {
+                "requested": snapshot,
+                "current": order["snapshot"],
+                "message": "请求的字段级血缘快照已更新，编排顺序按当前快照给出",
+            }
+        return order
+
+    def sync_ledger(
+        self,
+        precedence: str | None = None,
+        snapshot: str | None = None,
+        batch: str | None = None,
+        version: str | None = None,
+    ) -> dict[str, Any]:
+        return field_lineage_service.sync_ledger(
+            precedence=precedence or PRECEDENCE_VERIFIED,
+            snapshot=snapshot,
+            batch=batch,
+            version=version,
+            source="flow",
+        )
+
+    def ledger(self, status: str | None = None, snapshot: str | None = None) -> dict[str, Any]:
+        return field_lineage_service.ledger(status=status, snapshot=snapshot)
+
+    def review_ledger_entry(self, entry_id: int, **kwargs: Any) -> dict[str, Any]:
+        return field_lineage_service.review_ledger_entry(entry_id, **kwargs)
